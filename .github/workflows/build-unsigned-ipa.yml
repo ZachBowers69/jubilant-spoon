@@ -1,0 +1,101 @@
+name: Build unsigned IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Locate project ZIP
+        run: |
+          ZIP_FILE=$(find . -maxdepth 1 -iname "*iPhone-Buildable*.zip" -o -iname "*GeoShorts*.zip" | head -n 1)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "Could not find the GeoShorts project ZIP."
+            ls -la
+            exit 1
+          fi
+
+          echo "Using ZIP: $ZIP_FILE"
+          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
+
+      - name: Extract project
+        run: |
+          mkdir extracted
+          ditto -x -k "$ZIP_FILE" extracted
+
+          echo "Extracted contents:"
+          find extracted -maxdepth 3 -type f | head -100
+
+      - name: Find project root
+        run: |
+          PROJECT_YML=$(find extracted -name project.yml -type f | head -n 1)
+
+          if [ -z "$PROJECT_YML" ]; then
+            echo "project.yml was not found inside the ZIP."
+            find extracted -maxdepth 5 -type f
+            exit 1
+          fi
+
+          PROJECT_ROOT=$(dirname "$PROJECT_YML")
+          echo "Project root: $PROJECT_ROOT"
+          echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ${{ env.PROJECT_ROOT }}
+        run: xcodegen generate
+
+      - name: Show available schemes
+        working-directory: ${{ env.PROJECT_ROOT }}
+        run: |
+          xcodebuild -list -project GeoShortsStudio.xcodeproj
+
+      - name: Build unsigned application
+        working-directory: ${{ env.PROJECT_ROOT }}
+        run: |
+          xcodebuild \
+            -project GeoShortsStudio.xcodeproj \
+            -scheme GeoShortsStudio \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Locate built application
+        working-directory: ${{ env.PROJECT_ROOT }}
+        run: |
+          APP_PATH=$(find build/Build/Products -name "GeoShortsStudio.app" -type d | head -n 1)
+
+          if [ -z "$APP_PATH" ]; then
+            echo "GeoShortsStudio.app was not produced."
+            find build/Build/Products -maxdepth 4
+            exit 1
+          fi
+
+          echo "Application found at: $APP_PATH"
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p ipa/Payload
+          cp -R "${PROJECT_ROOT}/${APP_PATH}" ipa/Payload/
+          cd ipa
+          zip -qry GeoShortsStudio-unsigned.ipa Payload
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: GeoShortsStudio-unsigned-ipa
+          path: ipa/GeoShortsStudio-unsigned.ipa
+          retention-days: 14
